@@ -84,8 +84,8 @@ def init_db() -> None:
               customer TEXT, task_no TEXT NOT NULL, task_key TEXT NOT NULL,
               title TEXT, description TEXT, phase TEXT, zone TEXT, area TEXT,
               panel TEXT, special_code TEXT, resource_type TEXT, classification TEXT,
-              qualification TEXT, planning_mhr TEXT, information_skill TEXT,
-              requirement_link TEXT, linked_jobcards TEXT
+              type_code TEXT, qualification TEXT, planning_mhr TEXT, information_skill TEXT,
+              requirement_link TEXT, linked_jobcards TEXT, jobcards_title TEXT
             );
             CREATE INDEX IF NOT EXISTS idx_amp_key ON amp_task(task_key);
             CREATE INDEX IF NOT EXISTS idx_amp_customer ON amp_task(customer, task_key);
@@ -117,7 +117,8 @@ def init_db() -> None:
               title TEXT, description TEXT, phase TEXT, zone TEXT, area TEXT, panel TEXT,
               special_code TEXT, resource_type TEXT, classification TEXT, qualification TEXT,
               planning_mhr REAL DEFAULT 0, reviewed_mhr REAL, information_skill TEXT,
-              requirement_link TEXT, linked_jobcards TEXT, important_job INTEGER DEFAULT 0,
+              requirement_link TEXT, linked_jobcards TEXT, type_code TEXT, jobcards_title TEXT,
+              important_job INTEGER DEFAULT 0,
               important_source TEXT, not_in_database INTEGER DEFAULT 0, review_note TEXT,
               review_reason TEXT, updated_at TEXT
             );
@@ -129,6 +130,12 @@ def init_db() -> None:
             );
             """
         )
+        # Keep existing demo databases compatible when the output specification gains columns.
+        for table, column in (("amp_task", "type_code"), ("amp_task", "jobcards_title"),
+                              ("evaluation_item", "type_code"), ("evaluation_item", "jobcards_title")):
+            existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+            if column not in existing:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} TEXT")
         if not conn.execute("SELECT COUNT(*) FROM external_data").fetchone()[0]:
             seed_rows = [
                 ("Mapping khách hàng", "VA-VJ", "VietJet", None, "VA-VJ", "Mẫu Tally Sheet VietJet", "Chuẩn hóa mã khách hàng"),
@@ -178,17 +185,55 @@ def import_amos() -> None:
                 source, get(row, "A/C Type"), get(row, "Customer"), str(task_no).strip(), norm(task_no),
                 get(row, "Taskcard Title", "Title"), get(row, "Description"), get(row, "Phase"),
                 get(row, "Zone"), get(row, "Area"), get(row, "Panel"), get(row, "Special Code"),
-                get(row, "Resource Type"), get(row, "Classification"), get(row, "Qualification"),
+                get(row, "Resource Type"), get(row, "Classification"), get(row, "Type Code"), get(row, "Qualification"),
                 get(row, "Planning MHR"), get(row, "Information Skill"), get(row, "References"),
-                get(row, "Linked Jobcards"),
+                get(row, "Linked Jobcards"), get(row, "Jobcards Title"),
             ))
     with db() as conn:
         conn.executemany(
             """INSERT INTO amp_task(source,aircraft_type,customer,task_no,task_key,title,description,
-            phase,zone,area,panel,special_code,resource_type,classification,qualification,planning_mhr,
-            information_skill,requirement_link,linked_jobcards) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            phase,zone,area,panel,special_code,resource_type,classification,type_code,qualification,planning_mhr,
+            information_skill,requirement_link,linked_jobcards,jobcards_title) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             records,
         )
+
+
+def backfill_output_columns() -> None:
+    """Populate fields added by the approved output workbook in existing demo data."""
+    with db() as conn:
+        missing_amp = conn.execute(
+            "SELECT COUNT(*) FROM amp_task WHERE type_code IS NULL AND jobcards_title IS NULL"
+        ).fetchone()[0]
+    if missing_amp:
+        updates: list[tuple[Any, Any, str, str]] = []
+        for path, source, sheet in ((AMOS_DIR / "ALL AMP Task.xlsx", "VNA", "AMP"),
+                                    (AMOS_DIR / "ALL Customer AMP.xlsx", "CUSTOMER", None)):
+            if not path.exists():
+                continue
+            wb = load_workbook(path, read_only=True, data_only=True)
+            ws = wb[sheet] if sheet else wb.active
+            rows = ws.iter_rows(values_only=True); headers = list(next(rows)); h = cellmap(headers)
+            for row in rows:
+                def value(name: str):
+                    idx = h.get(norm(name)); return row[idx] if idx is not None and idx < len(row) else None
+                task_no = value("Task No./Rev No.") or value("Jobcard No.") or value("Taskcard No./Rev")
+                if task_no:
+                    updates.append((value("Type Code"), value("Jobcards Title"), source, norm(task_no)))
+        with db() as conn:
+            conn.executemany(
+                "UPDATE amp_task SET type_code=?,jobcards_title=? WHERE source=? AND task_key=?",
+                updates,
+            )
+    with db() as conn:
+        pending = conn.execute("""SELECT i.id,i.task_no,t.customer,t.aircraft_type
+          FROM evaluation_item i JOIN evaluation e ON e.id=i.evaluation_id
+          JOIN tally_sheet t ON t.id=e.tally_id
+          WHERE i.matched=1 AND i.type_code IS NULL AND i.jobcards_title IS NULL""").fetchall()
+        for item in pending:
+            amp = lookup_amp(conn, item["task_no"], item["customer"], item["aircraft_type"])
+            if amp:
+                conn.execute("UPDATE evaluation_item SET type_code=?,jobcards_title=? WHERE id=?",
+                             (amp["type_code"], amp["jobcards_title"], item["id"]))
 
 
 def parse_vietjet(path: Path) -> list[dict[str, Any]]:
@@ -287,15 +332,16 @@ def create_evaluation(path: Path, file_name: str, customer: str, aircraft_reg: s
                           amp["zone"] or item.get("source_zone"), amp["area"], amp["panel"], amp["special_code"],
                           amp["resource_type"], amp["classification"], amp["qualification"],
                           mhr_hours(amp["planning_mhr"]), amp["information_skill"], amp["requirement_link"],
-                          amp["linked_jobcards"], important, "AMOS Watch Item" if important else None, 0)
+                          amp["linked_jobcards"], amp["type_code"], amp["jobcards_title"],
+                          important, "AMOS Watch Item" if important else None, 0)
             else:
                 values = (0,None,item.get("source_title"),item.get("source_note"),None,item.get("source_zone"),
-                          None,None,None,None,None,None,0,None,None,None,0,None,1)
+                          None,None,None,None,None,None,0,None,None,None,None,None,0,None,1)
             conn.execute("""INSERT INTO evaluation_item(evaluation_id,seq,section,task_no,source_title,event_type,rii,
               source_note,matched,amp_source,title,description,phase,zone,area,panel,special_code,resource_type,
               classification,qualification,planning_mhr,information_skill,requirement_link,linked_jobcards,
-              important_job,important_source,not_in_database,updated_at)
-              VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+              type_code,jobcards_title,important_job,important_source,not_in_database,updated_at)
+              VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
               (evaluation_id,item.get("seq"),item.get("section"),str(item["task_no"]),item.get("source_title"),
                item.get("event_type"),item.get("rii"),item.get("source_note"),*values,now()))
         conn.execute("UPDATE tally_sheet SET matched_count=? WHERE id=?", (matched,tally_id))
@@ -322,6 +368,7 @@ def seed_samples() -> None:
 def startup():
     init_db()
     import_amos()
+    backfill_output_columns()
     seed_samples()
 
 
@@ -420,7 +467,8 @@ async def upload(file: UploadFile = File(...), customer: str = Form(...), aircra
 
 
 @app.get("/api/evaluations/{evaluation_id}")
-def evaluation_detail(evaluation_id: str, q: str = "", status: str = "all", page: int = 1, page_size: int = 50):
+def evaluation_detail(evaluation_id: str, q: str = "", status: str = "all", page: int = 1,
+                      page_size: int = 50, sort_by: str = "seq", sort_dir: str = "asc"):
     page = max(1, page); page_size = min(max(10,page_size),200)
     where = ["i.evaluation_id=?"]; params: list[Any] = [evaluation_id]
     if q:
@@ -436,7 +484,13 @@ def evaluation_detail(evaluation_id: str, q: str = "", status: str = "all", page
           (evaluation_id,)).fetchone()
         if not header: raise HTTPException(404, "Không tìm thấy lần đánh giá")
         total = conn.execute(f"SELECT COUNT(*) FROM evaluation_item i WHERE {predicate}", params).fetchone()[0]
-        items = [dict(r) for r in conn.execute(f"SELECT i.* FROM evaluation_item i WHERE {predicate} ORDER BY i.id LIMIT ? OFFSET ?",
+        sortable = {"task_no", "title", "description", "phase", "zone", "area", "panel", "special_code",
+                    "resource_type", "classification", "type_code", "qualification", "planning_mhr",
+                    "information_skill", "requirement_link", "linked_jobcards", "jobcards_title",
+                    "important_job", "not_in_database", "seq"}
+        order_col = sort_by if sort_by in sortable else "seq"
+        direction = "DESC" if sort_dir.lower() == "desc" else "ASC"
+        items = [dict(r) for r in conn.execute(f"SELECT i.* FROM evaluation_item i WHERE {predicate} ORDER BY i.{order_col} {direction},i.id ASC LIMIT ? OFFSET ?",
                  (*params,page_size,(page-1)*page_size))]
         summary = dict(conn.execute("""SELECT COUNT(*) total, SUM(matched) matched, SUM(not_in_database) unmatched,
           SUM(important_job) important, ROUND(SUM(COALESCE(reviewed_mhr,planning_mhr)),2) total_mhr
@@ -518,7 +572,7 @@ def export_excel(evaluation_id: str):
         if not header: raise HTTPException(404,"Không tìm thấy lần đánh giá")
         items=[dict(r) for r in conn.execute("SELECT * FROM evaluation_item WHERE evaluation_id=? ORDER BY id",(evaluation_id,))]
     wb=Workbook(); wb.remove(wb.active)
-    columns=[("Task No.","task_no"),("Taskcard Title","title"),("Description","description"),("Phase","phase"),("Zone","zone"),("Area","area"),("Panel","panel"),("Special Code","special_code"),("Resource Type","resource_type"),("Classification","classification"),("Qualification","qualification"),("Planning MHR","planning_mhr"),("MHR Review","reviewed_mhr"),("Requirement Link","requirement_link"),("Linked Jobcards","linked_jobcards"),("Important Job","important_job"),("Not included in Database","not_in_database"),("Review note","review_note")]
+    columns=[("Task No.","task_no"),("Taskcard Title","title"),("Description","description"),("Phase","phase"),("Zone","zone"),("Area","area"),("Panel","panel"),("Special Code","special_code"),("Resource Type","resource_type"),("Classification","classification"),("Type Code","type_code"),("Qualification","qualification"),("Planning MHR","planning_mhr"),("Information Skill","information_skill"),("Requirement Link","requirement_link"),("Linked Jobcards","linked_jobcards"),("Jobcards Title","jobcards_title"),("Important Job","important_job"),("Not included in Database","not_in_database")]
     for title, subset in [("Detailed Task List",items),("Important Jobs",[x for x in items if x["important_job"]]),("Task out of Check Type Scope",[]) ,("Database to be Updated",[x for x in items if x["not_in_database"]])]:
         ws=wb.create_sheet(title); ws.append([c[0] for c in columns])
         for item in subset: ws.append(["X" if key in {"important_job","not_in_database"} and item[key] else item[key] for _,key in columns])
