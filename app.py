@@ -89,6 +89,15 @@ def init_db() -> None:
             );
             CREATE INDEX IF NOT EXISTS idx_amp_key ON amp_task(task_key);
             CREATE INDEX IF NOT EXISTS idx_amp_customer ON amp_task(customer, task_key);
+            CREATE TABLE IF NOT EXISTS jobcard_master (
+              id INTEGER PRIMARY KEY, meta_key TEXT, meta_value TEXT,
+              aircraft_type TEXT, jobcard_no TEXT NOT NULL, jobcard_key TEXT NOT NULL,
+              title TEXT, description TEXT, phase TEXT, zone TEXT, area TEXT,
+              panel TEXT, special_code TEXT, resource_type TEXT, classification TEXT,
+              qualification TEXT, planning_mhr TEXT, information_skill TEXT,
+              information_mhr TEXT, requirement_link TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_jobcard_key ON jobcard_master(jobcard_key);
             CREATE TABLE IF NOT EXISTS external_data (
               id INTEGER PRIMARY KEY AUTOINCREMENT, category TEXT NOT NULL,
               code TEXT NOT NULL, canonical_value TEXT, aircraft_type TEXT,
@@ -194,6 +203,51 @@ def import_amos() -> None:
             """INSERT INTO amp_task(source,aircraft_type,customer,task_no,task_key,title,description,
             phase,zone,area,panel,special_code,resource_type,classification,type_code,qualification,planning_mhr,
             information_skill,requirement_link,linked_jobcards,jobcards_title) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            records,
+        )
+
+
+def import_jobcards() -> None:
+    """Import the AMOS Jobcard master into its own read-only MiniDB table."""
+    with db() as conn:
+        if conn.execute("SELECT COUNT(*) FROM jobcard_master").fetchone()[0]:
+            return
+    path = AMOS_DIR / "All Jobcard.xlsx"
+    if not path.exists():
+        return
+    wb = load_workbook(path, read_only=True, data_only=True)
+    ws = wb.active
+    rows = ws.iter_rows(values_only=True)
+    headers = list(next(rows))
+    h = cellmap(headers)
+
+    def get(row, name):
+        idx = h.get(norm(name))
+        return row[idx] if idx is not None and idx < len(row) else None
+
+    records: list[tuple[Any, ...]] = []
+    for row in rows:
+        jobcard_no = get(row, "Jobcard No.")
+        if not jobcard_no:
+            continue
+        meta_key = get(row, "Meta Key")
+        meta_value = get(row, "Meta Value")
+        aircraft_type = meta_value if norm(meta_key) == "AIRCRAFT TYPE" else None
+        records.append((
+            meta_key, meta_value, aircraft_type, str(jobcard_no).strip(), norm(jobcard_no),
+            get(row, "Title"), get(row, "Description"), get(row, "Phase"),
+            get(row, "Zone"), get(row, "Area"), get(row, "Panel"),
+            get(row, "Special Code"), get(row, "Resource Type"),
+            get(row, "Classification"), get(row, "Qualification"),
+            get(row, "Planning MHR"), get(row, "Information Skill"),
+            get(row, "Information MHR"), get(row, "References"),
+        ))
+    with db() as conn:
+        conn.executemany(
+            """INSERT INTO jobcard_master(meta_key,meta_value,aircraft_type,jobcard_no,
+            jobcard_key,title,description,phase,zone,area,panel,special_code,resource_type,
+            classification,qualification,planning_mhr,information_skill,information_mhr,
+            requirement_link) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             records,
         )
 
@@ -368,6 +422,7 @@ def seed_samples() -> None:
 def startup():
     init_db()
     import_amos()
+    import_jobcards()
     backfill_output_columns()
     seed_samples()
 
@@ -420,6 +475,40 @@ def browse_amos(q: str = "", source: str = "all", aircraft_type: str = "all",
           SUM(CASE WHEN source='CUSTOMER' THEN 1 ELSE 0 END) customer,
           SUM(CASE WHEN UPPER(COALESCE(classification,''))='WATCH ITEM' THEN 1 ELSE 0 END) watch_items
           FROM amp_task""").fetchone())
+    return {"items": rows, "total": total, "page": page, "page_size": page_size,
+            "filters": filters, "stats": stats}
+
+
+@app.get("/api/data/jobcards")
+def browse_jobcards(q: str = "", aircraft_type: str = "all",
+                    classification: str = "all", page: int = 1, page_size: int = 40):
+    page = max(1, page); page_size = min(max(10, page_size), 100)
+    where = ["1=1"]; params: list[Any] = []
+    if q.strip():
+        where.append("(jobcard_no LIKE ? OR title LIKE ? OR description LIKE ? OR special_code LIKE ?)")
+        params.extend([f"%{q.strip()}%"] * 4)
+    for column, value in (("aircraft_type", aircraft_type), ("classification", classification)):
+        if value != "all":
+            where.append(f"COALESCE({column},'')=?"); params.append(value)
+    predicate = " AND ".join(where)
+    with db() as conn:
+        total = conn.execute(f"SELECT COUNT(*) FROM jobcard_master WHERE {predicate}", params).fetchone()[0]
+        rows = [dict(r) for r in conn.execute(f"""SELECT id,'JOBCARD' source,aircraft_type,
+          NULL customer,jobcard_no task_no,title,description,phase,zone,area,panel,special_code,
+          resource_type,classification,qualification,planning_mhr,information_skill,
+          information_mhr,requirement_link FROM jobcard_master
+          WHERE {predicate} ORDER BY jobcard_no LIMIT ? OFFSET ?""",
+          (*params, page_size, (page - 1) * page_size))]
+
+        def distinct(column: str, limit: int = 80):
+            return [r[0] for r in conn.execute(f"""SELECT DISTINCT {column} FROM jobcard_master
+              WHERE {column} IS NOT NULL AND TRIM({column})<>'' ORDER BY {column} LIMIT ?""", (limit,))]
+
+        filters = {"aircraft_types": distinct("aircraft_type"),
+                   "classifications": distinct("classification")}
+        stats = dict(conn.execute("""SELECT COUNT(*) total,
+          SUM(CASE WHEN UPPER(COALESCE(classification,''))='WATCH ITEM' THEN 1 ELSE 0 END) watch_items
+          FROM jobcard_master""").fetchone())
     return {"items": rows, "total": total, "page": page, "page_size": page_size,
             "filters": filters, "stats": stats}
 
