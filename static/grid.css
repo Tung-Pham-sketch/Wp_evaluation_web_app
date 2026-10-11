@@ -71,15 +71,11 @@
 .column-pop em { font-size: 11px; color: var(--muted); font-style: normal; }
 
 .final-sheet { background: white; border: 1px solid var(--line); }
-.final-title { padding: 14px; text-align: center; background: var(--navy); color: white; font-size: 18px; font-weight: 700; }
 .final-sheet section { padding: 0 14px 14px; }
 .final-sheet section h3 { margin: 0 -14px 12px; padding: 9px 14px; background: #e7eef3; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); font-size: 13px; }
 .final-info { display: grid; grid-template-columns: repeat(2, minmax(260px, 1fr)); gap: 0 20px; }
 .final-info label { min-height: 55px; padding: 7px 0; border-bottom: 1px solid var(--line); margin: 0; }
 .final-info b { display: block; margin-top: 4px; color: var(--ink); }
-.final-table th { position: static; }
-.final-table th:first-child, .final-table td:first-child { width: 52px; text-align: center; }
-.final-table .total-row td { background: #eef3f7; font-weight: 700; }
 .final-sign { display: grid; grid-template-columns: 1fr 1fr; gap: 30px; padding: 14px; border-top: 1px solid var(--line); }
 .final-actions { display: flex; justify-content: flex-end; padding: 0 14px 14px; }
 

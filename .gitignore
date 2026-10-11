@@ -3,3 +3,12 @@ __pycache__/
 data/
 .venv/
 .env
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+*.log
+.idea/
+.vscode/
+dist/
+build/

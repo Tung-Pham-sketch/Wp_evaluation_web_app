@@ -172,15 +172,44 @@ function setBusy(button, busyText) {
   return () => { button.disabled = false; button.textContent = original; };
 }
 
+function isLufthansaWorkflow() {
+  const tally = state.workflow?.tally || {};
+  return tally.adapter === 'Lufthansa' || String(tally.customer || '').toUpperCase() === 'DLH';
+}
+
+function lufthansaStructure() {
+  return workflowStep('inspect')?.details?.structure || state.workflow?.lufthansa_structure || null;
+}
+
+function structureTable(structure) {
+  const blocks = structure?.blocks || [];
+  return `<div class="panel structure-panel"><div class="panel-head"><div><h3>1. Cấu trúc Tally Sheet</h3><p>${esc(structure.form_type || 'Báo cáo nhiều khối')} · ${esc(structure.active_sheet || '—')} · ${esc(structure.dimension || '—')}</p></div><b>${fmt(structure.block_count)} khối</b></div>
+    <div class="table-wrap"><table class="structure-table"><thead><tr><th>STT</th><th>Khối dữ liệu</th><th>Vị trí</th><th>Số bản ghi</th><th>Các trường</th><th>Phạm vi hiện tại</th></tr></thead><tbody>${blocks.map(block => `<tr><td>${block.order}</td><td><b>${esc(block.title)}</b><br><small>${esc(block.category)}</small></td><td>${esc(block.row_span || '—')}<br><small>${esc(block.data_range || '—')}</small></td><td><b>${fmt(block.record_count)}</b></td><td><div class="field-list">${(block.fields || []).map(field => `<span>${esc(field)}</span>`).join('') || '—'}</div></td><td>${block.is_taskcard_scope ? badge('So Taskcard', 'green') : badge('Đọc & lưu', 'blue')}</td></tr>`).join('')}</tbody></table></div>
+    <div class="structure-note">${esc(structure.metadata_note || '')}</div></div>`;
+}
+
+function blockEvaluationTable(blocks) {
+  const color = status => status === 'Hoàn thành' ? 'green' : status === 'Cần review' ? 'amber' : status === 'Không có dữ liệu' ? 'blue' : 'blue';
+  return `<div class="panel block-result-panel"><div class="panel-head"><div><h3>Các khối công việc lớn</h3><p>Hiển thị toàn bộ đầu mục; chỉ MS ITEMS áp dụng logic so taskcard trong phiên bản hiện tại</p></div><b>${fmt(blocks.length)} khối</b></div><div class="table-wrap"><table><thead><tr><th>STT</th><th>Khối công việc</th><th>Nhóm</th><th>Số bản ghi</th><th>Trạng thái</th><th>Kết quả sơ bộ</th></tr></thead><tbody>${blocks.map(block => `<tr class="${block.is_taskcard_scope ? 'taskcard-scope-row' : ''}"><td>${block.order}</td><td><b>${esc(block.title)}</b></td><td>${esc(block.category)}</td><td><b>${fmt(block.record_count)}</b></td><td>${badge(block.status, color(block.status))}</td><td>${esc(block.result)}</td></tr>`).join('')}</tbody></table></div></div>`;
+}
+
 function renderInspectionStep(host) {
   const step = workflowStep('inspect');
   const result = step.details || {};
   const hasResult = Boolean(result.row_count);
-  host.innerHTML = `${stepHeader(2, 'Đọc và kiểm tra sơ bộ', 'Nhận diện cấu trúc file trước khi matching với AMOS')}
-    <div class="instruction"><b>Cần kiểm tra:</b> mẫu Tally, số dòng đọc được, các cột nhận diện và cảnh báo metadata. Bước này chưa tạo kết quả đánh giá.</div>
-    ${hasResult ? `<div class="cards inspection-cards"><div class="card metric"><span>Mẫu nhận diện</span><strong>${esc(result.adapter)}</strong></div><div class="card metric"><span>Dòng nghiệp vụ</span><strong>${fmt(result.row_count)}</strong></div><div class="card metric"><span>Sheet</span><strong>${esc(result.active_sheet || '—')}</strong></div><div class="card metric"><span>Mã trùng</span><strong>${fmt(result.duplicate_count)}</strong></div></div>
+  const isDLH = isLufthansaWorkflow();
+  const structure = lufthansaStructure();
+  const overview = isDLH && structure
+    ? `<div class="cards inspection-cards"><div class="card metric"><span>Mẫu nhận diện</span><strong>Lufthansa / DLH</strong></div><div class="card metric"><span>Khối dữ liệu</span><strong>${fmt(structure.block_count)}</strong></div><div class="card metric"><span>Tổng bản ghi</span><strong>${fmt(structure.total_record_count)}</strong></div><div class="card metric"><span>MS ITEMS</span><strong>${fmt(structure.ms_item_count)}</strong><small>Phạm vi so Taskcard</small></div></div>`
+    : `<div class="cards inspection-cards"><div class="card metric"><span>Mẫu nhận diện</span><strong>${esc(result.adapter)}</strong></div><div class="card metric"><span>Dòng nghiệp vụ</span><strong>${fmt(result.row_count)}</strong></div><div class="card metric"><span>Sheet</span><strong>${esc(result.active_sheet || '—')}</strong></div><div class="card metric"><span>Mã trùng</span><strong>${fmt(result.duplicate_count)}</strong></div></div>`;
+  const detail = isDLH && structure
+    ? structureTable(structure)
+    : `<div class="panel"><div class="panel-head"><div><h3>Dữ liệu mẫu đã đọc</h3><p>${esc((result.detected_columns || []).join(' · ') || 'Không có danh sách cột')}</p></div></div><div class="table-wrap"><table><thead><tr><th>STT</th><th>Task/CRI</th><th>Title</th><th>Section</th></tr></thead><tbody>${(result.sample_rows || []).map(row => `<tr><td>${esc(row.seq || '—')}</td><td><b>${esc(row.task_no)}</b></td><td>${esc(row.title || '—')}</td><td>${esc(row.section || '—')}</td></tr>`).join('')}</tbody></table></div></div>`;
+  host.innerHTML = `${stepHeader(2, 'Đọc và kiểm tra sơ bộ', isDLH ? 'Nhận diện đầy đủ cấu trúc Workpackage Summary của Lufthansa / DLH' : 'Nhận diện cấu trúc file trước khi matching với AMOS')}
+    <div class="instruction">${isDLH ? '<b>Kết quả đọc:</b> toàn bộ các khối, vị trí, số bản ghi và danh sách trường trong Tally Sheet. Bước này chưa chạy matching.' : '<b>Cần kiểm tra:</b> mẫu Tally, số dòng đọc được, các cột nhận diện và cảnh báo metadata. Bước này chưa tạo kết quả đánh giá.'}</div>
+    ${hasResult ? `${overview}
       ${result.warnings?.length ? `<div class="notice"><b>Cảnh báo dữ liệu</b><ul>${result.warnings.map(item => `<li>${esc(item)}</li>`).join('')}</ul></div>` : '<div class="success-note">Không phát hiện cảnh báo dữ liệu đầu vào.</div>'}
-      <div class="panel"><div class="panel-head"><div><h3>Dữ liệu mẫu đã đọc</h3><p>${esc((result.detected_columns || []).join(' · ') || 'Không có danh sách cột')}</p></div></div><div class="table-wrap"><table><thead><tr><th>STT</th><th>Task/CRI</th><th>Title</th><th>Section</th></tr></thead><tbody>${(result.sample_rows || []).map(row => `<tr><td>${esc(row.seq || '—')}</td><td><b>${esc(row.task_no)}</b></td><td>${esc(row.title || '—')}</td><td>${esc(row.section || '—')}</td></tr>`).join('')}</tbody></table></div></div>` : '<div class="empty-step">Chưa đọc file. Bấm “Đọc sơ bộ” để kiểm tra cấu trúc Tally Sheet.</div>'}
+      ${detail}` : '<div class="empty-step">Chưa đọc file. Bấm “Đọc sơ bộ” để kiểm tra cấu trúc Tally Sheet.</div>'}
     <div class="step-actions"><button class="ghost" id="inspectTally">${hasResult ? '↻ Đọc lại' : 'Đọc sơ bộ'}</button>${hasResult && !result.confirmed ? '<button class="primary" id="confirmInspection">Xác nhận dữ liệu đầu vào</button>' : ''}${result.confirmed ? '<span class="success-text">✓ Đã xác nhận dữ liệu đầu vào</span><button class="primary next-step">Chuyển sang đánh giá →</button>' : ''}</div>`;
   $('#inspectTally').onclick = async event => {
     const restore = setBusy(event.currentTarget, 'Đang đọc file…');
@@ -201,10 +230,20 @@ function renderEvaluationStep(host) {
   const evaluation = state.workflow.evaluation;
   const summary = state.workflow.summary;
   const inspection = workflowStep('inspect');
-  host.innerHTML = `${stepHeader(3, 'Chạy đánh giá sơ bộ', 'Đối chiếu chính xác Task/CRI với MiniDB AMOS')}
-    <div class="instruction">Hệ thống chỉ matching mã chính xác, không phân biệt hoa thường. Task không match vẫn được giữ và không tự gán MHR.</div>
+  const isDLH = isLufthansaWorkflow();
+  const structure = lufthansaStructure();
+  const blocks = state.workflow.block_summary || [];
+  const totalRecords = structure?.total_record_count || summary?.total || 0;
+  const msItems = structure?.ms_item_count || summary?.total || 0;
+  const taskcardBlock = blocks.find(block => block.is_taskcard_scope);
+  const exactMatches = taskcardBlock?.matched ?? summary?.matched ?? 0;
+  const evaluationCards = isDLH
+    ? `<div class="cards evaluation-cards"><div class="card metric"><span>Khối công việc</span><strong>${fmt(structure?.block_count || blocks.length)}</strong></div><div class="card metric"><span>Tổng bản ghi</span><strong>${fmt(totalRecords)}</strong></div><div class="card metric"><span>Taskcard MS ITEMS</span><strong>${fmt(msItems)}</strong></div><div class="card metric"><span>Lớp 1 · Khớp 100%</span><strong>${fmt(exactMatches)}</strong><small>${msItems ? Math.round(exactMatches * 100 / msItems) : 0}% MS ITEMS</small></div><div class="card metric"><span>Lớp 2 · Tiền tố mã</span><strong>${fmt(taskcardBlock?.layer_2 || 0)}</strong><small>Cần review</small></div><div class="card metric"><span>Lớp 3 · Nội dung Title</span><strong>${fmt(taskcardBlock?.layer_3 || 0)}</strong><small>Cần review</small></div></div>`
+    : `<div class="cards"><div class="card metric"><span>Tổng task</span><strong>${fmt(summary?.total)}</strong></div><div class="card metric"><span>Lớp 1 · Khớp 100%</span><strong>${fmt(summary?.matched)}</strong><small>${summary?.total ? Math.round(summary.matched * 100 / summary.total) : 0}% tổng task</small></div><div class="card metric"><span>Lớp 2 · Tiền tố mã</span><strong>${fmt(summary?.layer_2 || 0)}</strong><small>Cần review</small></div><div class="card metric"><span>Lớp 3 · Nội dung Title</span><strong>${fmt(summary?.layer_3 || 0)}</strong><small>Cần review</small></div><div class="card metric"><span>Chưa có candidate</span><strong>${fmt(summary?.unmatched)}</strong></div><div class="card metric"><span>Không áp dụng</span><strong>${fmt(summary?.not_applicable || 0)}</strong></div></div>`;
+  host.innerHTML = `${stepHeader(3, 'Chạy và đánh giá sơ bộ', isDLH ? 'Đánh giá MS ITEMS và tổng hợp đầy đủ các khối công việc lớn của Lufthansa / DLH' : 'Đối chiếu Event Number với Taskcard MPD và Customer CR')}
+    <div class="instruction">${isDLH ? '<b>Phạm vi:</b> MS ITEMS được đối chiếu CRI với Jobcard No. trong Customer AMP, lọc Customer = DLH và A/C Type = A350. Các khối còn lại được thống kê đầy đủ và giữ trạng thái chờ quy tắc riêng.' : 'Ba lớp được chạy tuần tự: khớp 100%; tiền tố mã từ 60% và ít nhất 4 ký tự đầu; nội dung Title từ 65%. Lớp 2–3 luôn cần review và MHR đề xuất chưa được tính vào kết quả.'}</div>
     ${inspection.status !== 'completed' ? '<div class="notice">Bước đọc sơ bộ chưa được xác nhận. Bạn vẫn có thể xem bước này, nhưng cần xác nhận dữ liệu trước khi đánh giá.</div>' : ''}
-    ${evaluation ? `<div class="cards"><div class="card metric"><span>Tổng task</span><strong>${fmt(summary.total)}</strong></div><div class="card metric"><span>Khớp AMOS</span><strong>${fmt(summary.matched)}</strong><small>${summary.total ? Math.round(summary.matched * 100 / summary.total) : 0}% tổng task</small></div><div class="card metric"><span>Chưa có trong DB</span><strong>${fmt(summary.unmatched)}</strong></div><div class="card metric"><span>Important Job</span><strong>${fmt(summary.important)}</strong></div></div><div class="result-callout"><b>Đánh giá sơ bộ đã hoàn thành</b><span>Mã đánh giá: ${esc(evaluation.id)} · Tổng MHR hiện có: ${fmt(summary.total_mhr)}</span></div>` : '<div class="empty-step">Chưa có kết quả đánh giá sơ bộ. Thao tác này sẽ tạo Detailed Task List và các danh sách ngoại lệ.</div>'}
+    ${evaluation ? `${evaluationCards}${isDLH && blocks.length ? blockEvaluationTable(blocks) : ''}<div class="result-callout"><b>Đánh giá sơ bộ đã hoàn thành</b><span>Mã đánh giá: ${esc(evaluation.id)} · Tổng MHR đã khớp 100%: ${fmt(summary.total_mhr)}</span></div>` : `${isDLH && blocks.length ? blockEvaluationTable(blocks) : ''}<div class="empty-step">Chưa có kết quả đánh giá sơ bộ. Thao tác này sẽ tạo Detailed Task List và các danh sách ngoại lệ.</div>`}
     <div class="step-actions">${evaluation ? '<button class="primary next-step">Mở bước Review →</button>' : '<button class="primary" id="runEvaluation">Chạy đánh giá sơ bộ</button>'}</div>`;
   const run = $('#runEvaluation');
   if (run) run.onclick = async event => {
@@ -271,7 +310,7 @@ async function renderReviewPanel() {
   const evaluationId = state.workflow.evaluation.id;
   if (state.reviewTab === 'detail') {
     const detail = await ensureDetail();
-    host.innerHTML = `<div class="toolbar"><input id="reviewSearch" placeholder="Tìm theo mã task, title, mô tả" value="${esc(state.reviewQuery)}"><select id="reviewStatus"><option value="all">Tất cả trạng thái</option><option value="matched">Đã khớp</option><option value="unmatched">Chưa khớp</option><option value="important">Important Job</option></select><span class="spacer"></span><small>${fmt(detail.filtered_total)} kết quả</small>${gridControls()}</div><div class="panel table-wrap">${taskTable(detail.items)}<div class="pagination"><button class="ghost" id="reviewPrev" ${detail.page <= 1 ? 'disabled' : ''}>Trước</button><button class="ghost" id="reviewNext" ${detail.page * detail.page_size >= detail.filtered_total ? 'disabled' : ''}>Sau</button></div></div>`;
+    host.innerHTML = `<div class="toolbar"><input id="reviewSearch" placeholder="Tìm theo mã task, title, mô tả" value="${esc(state.reviewQuery)}"><select id="reviewStatus"><option value="all">Tất cả trạng thái</option><option value="matched">Lớp 1 · Khớp 100%</option><option value="layer_2">Lớp 2 · Tiền tố mã</option><option value="layer_3">Lớp 3 · Nội dung Title</option><option value="review_required">Tất cả cần review</option><option value="not_found">Không có candidate</option><option value="not_applicable">Không áp dụng</option><option value="important">Important Job</option></select><span class="spacer"></span><small>${fmt(detail.filtered_total)} kết quả</small>${gridControls()}</div><div class="panel table-wrap">${taskTable(detail.items)}<div class="pagination"><button class="ghost" id="reviewPrev" ${detail.page <= 1 ? 'disabled' : ''}>Trước</button><button class="ghost" id="reviewNext" ${detail.page * detail.page_size >= detail.filtered_total ? 'disabled' : ''}>Sau</button></div></div>`;
     state.visibleItems = detail.items;
     $('#reviewStatus').value = state.reviewStatus;
     let timer;
@@ -330,7 +369,12 @@ async function renderFinalizeStep(host) {
 }
 
 const taskColumns = [
-  ['task_no', 'Task No.', 145], ['title', 'Taskcard Title', 220], ['description', 'Description', 260],
+  ['task_no', 'Event Number', 145], ['source_title', 'Tally Title', 240],
+  ['match_layer', 'Lớp khớp', 125], ['match_status', 'Kết quả khớp', 130],
+  ['match_score', 'Tỷ lệ khớp', 105], ['match_method', 'Nguồn/luồng khớp', 145],
+  ['match_candidate_count', 'Candidate', 90], ['suggested_task_no', 'Taskcard đề xuất', 165],
+  ['suggested_title', 'Database Title đề xuất', 240], ['suggested_mhr', 'MHR đề xuất', 105],
+  ['match_note', 'Cơ sở đánh giá', 260], ['title', 'Taskcard Title', 220], ['description', 'Description', 260],
   ['phase', 'Phase', 110], ['zone', 'Zone', 90], ['area', 'Area', 110], ['panel', 'Panel', 100],
   ['special_code', 'Special Code', 115], ['resource_type', 'Resource Type', 120],
   ['classification', 'Classification', 130], ['type_code', 'Type Code', 105],
@@ -347,10 +391,24 @@ function gridControls() {
   const preferences = gridPrefs();
   const hidden = new Set(preferences.hidden || []);
   const pinned = new Set(preferences.pinned || ['task_no']);
-  return `<details class="grid-menu"><summary>Cột hiển thị</summary><div>${taskColumns.map(([key, label]) => `<label><input type="checkbox" class="column-visible" data-col="${key}" ${hidden.has(key) ? '' : 'checked'}>${label}</label>`).join('')}<hr>${taskColumns.map(([key, label]) => `<label><input type="checkbox" class="column-pin" data-col="${key}" ${pinned.has(key) ? 'checked' : ''}>Ghim ${label}</label>`).join('')}<button class="ghost reset-columns" type="button">Mặc định</button></div></details>`;
+  return `<details class="column-menu"><summary class="ghost">Cột</summary><div class="column-pop"><div class="column-pop-head"><b>Hiển thị và ghim cột</b><button type="button" class="link reset-columns">Mặc định</button></div>${taskColumns.map(([key, label]) => `<label><input type="checkbox" class="column-visible" data-col="${key}" ${hidden.has(key) ? '' : 'checked'}><span>${label}</span><input type="checkbox" class="column-pin" data-col="${key}" ${pinned.has(key) ? 'checked' : ''}><em>Ghim</em></label>`).join('')}</div></details>`;
 }
 
 function displayValue(item, key) {
+  if (key === 'match_layer') {
+    const labels = {1: '1 · Khớp 100%', 2: '2 · Tiền tố mã', 3: '3 · Nội dung Title'};
+    return labels[item[key]] || '—';
+  }
+  if (key === 'match_score') return item[key] == null ? '—' : `${Number(item[key]).toFixed(1)}%`;
+  if (key === 'suggested_mhr') return item[key] == null ? '—' : esc(fmt(item[key]));
+  if (key === 'match_status') {
+    const labels = {AUTO_MATCH: 'Đã khớp', REVIEW_REQUIRED: 'Cần review', NOT_FOUND: 'Không tìm thấy', NOT_APPLICABLE: 'Không áp dụng'};
+    return labels[item[key]] ? `<span class="flag ${item[key] === 'AUTO_MATCH' ? 'yes' : item[key] === 'NOT_FOUND' ? 'alert' : ''}">${labels[item[key]]}</span>` : '—';
+  }
+  if (key === 'match_method') {
+    const labels = {VNA_TASKCARD: 'AMP VNA', CR_FALLBACK: 'CR fallback', CR_DLH_A350: 'CR DLH A350', PREFIX_VNA: 'Tiền tố AMP VNA', PREFIX_CR: 'Tiền tố CR', PREFIX_CR_DLH_A350: 'Tiền tố CR DLH A350', TITLE_VNA: 'Title AMP VNA', TITLE_CR: 'Title CR', TITLE_CR_DLH_A350: 'Title CR DLH A350', EVENT_TYPE_FILTER: 'Lọc Event', NO_CANDIDATE: 'Không có candidate', NO_CANDIDATE_DLH_A350: 'Không có CR DLH A350'};
+    return labels[item[key]] || (item[key] ? esc(item[key]) : '—');
+  }
   if (key === 'important_job') return item[key] ? '<span class="flag yes">X</span>' : '—';
   if (key === 'not_in_database') return item[key] ? '<span class="flag alert">X</span>' : '—';
   if (key === 'planning_mhr') {
