@@ -1,21 +1,24 @@
-from __future__ import annotations
-
+import os
+import tempfile
 import unittest
 
-from wp_app.adapters import adapter_for_customer
-from wp_app.main import app
+os.environ.setdefault("WP_DATA_DIR", tempfile.mkdtemp(prefix="wp-test-"))
+os.environ.setdefault("WP_SKIP_SEED_SAMPLES", "1")
+
+from wp_app.adapters import adapter_for_customer  # noqa: E402
+from wp_app.main import app  # noqa: E402
 
 
 class AppStructureTest(unittest.TestCase):
-    def test_customer_adapter_registry(self):
+    def test_adapter_registry(self):
         self.assertEqual(adapter_for_customer("VA-VJ"), "VietJet")
         self.assertEqual(adapter_for_customer("dlh"), "Lufthansa")
         with self.assertRaises(ValueError):
             adapter_for_customer("UNKNOWN")
 
-    def test_openapi_contract_contains_current_routes_only(self):
-        paths = app.openapi()["paths"]
-        required = {
+    def test_public_routes(self):
+        paths = set(app.openapi()["paths"])
+        expected = {
             "/api/dashboard",
             "/api/data/amos",
             "/api/data/jobcards",
@@ -32,7 +35,7 @@ class AppStructureTest(unittest.TestCase):
             "/api/evaluations/{evaluation_id}/history",
             "/api/tally/{tally_id}/download",
         }
-        self.assertTrue(required.issubset(paths))
+        self.assertTrue(expected.issubset(paths), expected - paths)
         self.assertNotIn("/api/upload", paths)
 
 

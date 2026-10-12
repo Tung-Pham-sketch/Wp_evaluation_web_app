@@ -1,3 +1,37 @@
+# =============================================================================
+# database.py – SQLITE CONNECTION, SCHEMA AND COLUMN MIGRATIONS
+# -----------------------------------------------------------------------------
+# db()      context manager: opens DB_PATH, rows behave like dicts
+#           (sqlite3.Row), foreign keys ON, COMMIT on success, always closes.
+#           Usage:  with db() as connection: connection.execute(...)
+# now()     ISO timestamp used in every *_at column.
+#
+# init_db() creates the tables if missing, then adds missing columns
+# (ALTER TABLE) so an older database keeps working. Safe to run repeatedly.
+#
+# Tables
+#   amp_task         the MiniDB copy of AMOS: source = 'VNA' (ALL AMP Task) or
+#                    'CUSTOMER' (Customer AMP). Key columns for matching:
+#                    mpd_key, task_base, task_key, aircraft_family (layer 1);
+#                    taskcard_key, taskcard_core_key, aircraft_model (layers 2–3);
+#                    origin = 'AMOS' | 'MANUAL', edited = 1 after "Sửa bản ghi".
+#   jobcard_master   All Jobcard.xlsx (read-only browse).
+#   external_data    mappings / rules managed outside AMOS.
+#   tally_sheet      one uploaded file + its metadata (customer, A/C, adapter).
+#   workflow_step    5 rows per tally (intake/inspect/evaluate/review/finalize).
+#   evaluation       one per tally (unique index) – Final Evaluation header.
+#   evaluation_item  one per Tally row – the matching result + review values.
+#                    match_status = AUTO_MATCH | REVIEW_REQUIRED | NOT_FOUND |
+#                    NOT_APPLICABLE; amp_refs = JSON natural keys of the AMOS
+#                    records used (survives a MiniDB rebuild).
+#   change_log       manual review changes (MHR, Important Job, note) + reason.
+#   amp_change       manual MiniDB changes (ADD / EDIT) + reason. Kept when a
+#                    tally is deleted; exported to Excel.
+#
+# MERGED_MIGRATIONS (bottom of file): columns added by the merge. To add a new
+# column later, append (table, column, type) to this tuple.
+# =============================================================================
+
 from __future__ import annotations
 
 import sqlite3
@@ -100,6 +134,13 @@ def init_db() -> None:
               PRIMARY KEY (tally_id, step_code)
             );
             CREATE UNIQUE INDEX IF NOT EXISTS idx_evaluation_tally ON evaluation(tally_id);
+            -- Merged: manual changes to the MiniDB ("Thêm vào Database" / "Sửa bản ghi").
+            -- Kept when a Tally Sheet is deleted; exportable to Excel.
+            CREATE TABLE IF NOT EXISTS amp_change (
+              id INTEGER PRIMARY KEY AUTOINCREMENT, action TEXT NOT NULL, amp_id INTEGER,
+              source TEXT, record_key TEXT, task_no TEXT, field_name TEXT, old_value TEXT, new_value TEXT,
+              reason TEXT, changed_by TEXT, changed_at TEXT, evaluation_id TEXT, tally_task_no TEXT
+            );
             """
         )
         migrations = (
@@ -124,7 +165,7 @@ def init_db() -> None:
             ("evaluation_item", "suggested_mhr", "REAL"),
             ("evaluation_item", "match_logic_version", "INTEGER"),
             ("tally_sheet", "description", "TEXT"),
-        )
+        ) + MERGED_MIGRATIONS
         for table, column, definition in migrations:
             existing = {row[1] for row in connection.execute(f"PRAGMA table_info({table})")}
             if column not in existing:
@@ -139,6 +180,8 @@ def init_db() -> None:
             "CREATE INDEX IF NOT EXISTS idx_amp_taskcard_customer "
             "ON amp_task(source,customer,taskcard_key)"
         )
+        connection.execute("CREATE INDEX IF NOT EXISTS idx_amp_mpd ON amp_task(source, mpd_key)")
+        connection.execute("CREATE INDEX IF NOT EXISTS idx_amp_base ON amp_task(source, task_base)")
         if not connection.execute("SELECT COUNT(*) FROM external_data").fetchone()[0]:
             seed_rows = [
                 ("Mapping khách hàng", "VA-VJ", "VietJet", None, "VA-VJ", "Mẫu Tally Sheet VietJet", "Chuẩn hóa mã khách hàng"),
@@ -153,3 +196,32 @@ def init_db() -> None:
                 customer,description,reason,updated_at) VALUES (?,?,?,?,?,?,?,?)""",
                 [(*row, now()) for row in seed_rows],
             )
+
+
+# Merged: columns of the MPD-key matching and of the MiniDB maintenance.
+MERGED_MIGRATIONS = (
+    # amp_task – AMOS fields used by MPD matching and the AMOS popup
+    ("amp_task", "aircraft_family", "TEXT"),
+    ("amp_task", "effectivity", "TEXT"),
+    ("amp_task", "amp_date", "TEXT"),
+    ("amp_task", "mp_name", "TEXT"),
+    ("amp_task", "taskcard_ident", "TEXT"),
+    ("amp_task", "task_type", "TEXT"),
+    ("amp_task", "task_base", "TEXT"),
+    ("amp_task", "mpd_key", "TEXT"),
+    ("amp_task", "side", "TEXT"),
+    ("amp_task", "information_mhr", "TEXT"),
+    # amp_task – manual work in the MiniDB (AMOS itself is never changed)
+    ("amp_task", "origin", "TEXT"),
+    ("amp_task", "edited", "INTEGER DEFAULT 0"),
+    ("amp_task", "updated_at", "TEXT"),
+    ("amp_task", "updated_by", "TEXT"),
+    # evaluation_item – MPD matching result
+    ("evaluation_item", "amos_reference", "TEXT"),
+    ("evaluation_item", "match_key", "TEXT"),
+    ("evaluation_item", "amp_refs", "TEXT"),
+    ("evaluation_item", "task_ref", "TEXT"),
+    ("evaluation_item", "source_zone", "TEXT"),
+    ("evaluation_item", "match_rule", "TEXT"),
+    ("evaluation_item", "added_to_db", "INTEGER DEFAULT 0"),
+)

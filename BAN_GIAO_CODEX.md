@@ -1,56 +1,40 @@
 # Bàn giao tiếp tục phát triển trên Codex
 
-Tài liệu này là điểm vào nhanh khi chuyển repository sang máy công ty hoặc mở một phiên Codex mới. Cập nhật gần nhất: 11/10/2026.
+Tài liệu này là điểm vào nhanh khi chuyển repository sang máy công ty hoặc mở một phiên Codex mới. Cập nhật gần nhất: 12/10/2026 (bản hợp nhất Ver3 + MPD key).
 
 ## 1. Mục tiêu dự án
 
 Xây dựng công cụ nội bộ giúp VAECO tiếp nhận Tally Sheet, đối chiếu AMOS/Customer AMP, review kết quả Workpack theo quy trình năm bước và xuất Excel có thể truy vết.
 
-Phiên bản hiện tại là demo chức năng. Chưa được xem là hệ thống production vì chưa có authentication, phân quyền, migration framework, CI/CD và cơ chế đồng thời nhiều người dùng.
+Phiên bản hiện tại là demo chức năng, chưa phải hệ thống production (chưa có authentication, phân quyền, migration framework, CI/CD, nhiều người dùng đồng thời).
 
 ## 2. Trạng thái bàn giao
 
-- Backend đã tách khỏi file đơn thành package `wp_app`.
-- Lệnh chạy cũ `python -m uvicorn app:app` vẫn hoạt động.
-- Parser được đăng ký qua `wp_app/adapters.py`.
-- Matching ba lớp nằm trong `wp_app/matching.py` và `wp_app/services.py`.
-- API được chia thành dashboard, tallies/workflow và evaluations/report.
-- Frontend hiện dùng `static/app-ver3.js`; không còn `static/app.js` cũ.
-- Database và uploads nằm trong `data/`, không được Git theo dõi.
-- Bộ kiểm thử bao phủ matching, parser sample, adapter registry và contract đường dẫn API.
+- Backend là package `wp_app`; lệnh `python -m uvicorn app:app` vẫn hoạt động.
+- Parser đăng ký qua `wp_app/adapters.py`; mẫu Tally do người dùng chọn ở bước 1 (`adapter_for_upload`).
+- **Matching lớp 1 = MPD key** trong `wp_app/mpd_matching.py`; cấu hình trong `wp_app/matching_config.py`.
+- Lớp 2–3 (tiền tố, Title) trong `wp_app/matching.py` + `services.lookup_amp(include_exact=False)`; chỉ chạy khi lớp 1 không có kết quả, không gán MHR.
+- Trạng thái lưu bằng mã `AUTO_MATCH / REVIEW_REQUIRED / NOT_FOUND / NOT_APPLICABLE`, hiển thị tiếng Việt.
+- Popup AMOS và Thêm/Sửa bản ghi MiniDB trong `wp_app/minidb.py`, route ở `wp_app/api/records.py`.
+- `MATCH_LOGIC_VERSION = 5`.
+- Frontend: `static/app-ver3.js` (12 phần có chú thích). CSS của Ver3 giữ nguyên, phần bổ sung nằm ở cuối `app.css` và `grid.css` (khối "Merged features").
+- `data/` không được Git theo dõi.
 
 ## 3. Các file cần đọc trước khi sửa
 
-Theo thứ tự:
-
-1. `README.md` — cài đặt, kiến trúc, API, nghiệp vụ và cách mở rộng.
-2. `wp_app/config.py` — vị trí dữ liệu và biến môi trường.
-3. `wp_app/adapters.py` — registry customer/parser.
-4. `wp_app/matching.py` — thuật toán và ngưỡng matching.
-5. `wp_app/services.py` — workflow và orchestration.
-6. Router liên quan trong `wp_app/api/`.
-7. `tests/` — contract hiện tại trước khi thay đổi hành vi.
+1. `README.md` — cài đặt, kiến trúc, quy tắc matching, API.
+2. `wp_app/config.py`, `wp_app/matching_config.py`.
+3. `wp_app/adapters.py`, `wp_app/parsers.py`.
+4. `wp_app/mpd_matching.py` (lớp 1) và `wp_app/matching.py` (lớp 2–3).
+5. `wp_app/services.py` — workflow, `populate_evaluation_items`, migration.
+6. `wp_app/minidb.py` — popup và MiniDB.
+7. `tests/` — contract hiện tại.
 
 ## 4. Dữ liệu không đi qua Git
 
-`.gitignore` loại trừ toàn bộ `data/`. Vì vậy clone repository trên máy công ty sẽ không có:
+`.gitignore` loại trừ `data/`, `*.db`, `*.xlsx`, `.env`, `.venv/`. Clone repository sẽ không có `data/wp_demo.db`, `data/uploads/`, hồ sơ và lịch sử review. Muốn giữ đúng trạng thái dữ liệu, sao chép riêng qua kênh nội bộ được phép. File AMOS/sample đặt ở thư mục cha: `DATABASE/` và `TALLY SHEET KHACH HANG/`.
 
-- `data/wp_demo.db`.
-- `data/uploads/`.
-- Các hồ sơ và lịch sử review hiện tại.
-
-Nếu cần tiếp tục đúng trạng thái dữ liệu hiện tại, hãy sao chép riêng hai mục trên bằng kênh nội bộ được phê duyệt. Không tải dữ liệu khách hàng lên GitHub công khai.
-
-Nếu chỉ cần source code và database mới, không cần sao chép `data/`; ứng dụng sẽ tạo lại khi khởi động.
-
-Các file tham chiếu AMOS và sample mặc định được tìm tại:
-
-```text
-<thư mục cha repository>/DATABASE/
-<thư mục cha repository>/TALLY SHEET KHACH HANG/
-```
-
-Xem tên file cụ thể trong README.
+Database cũ của nhánh MPD key (bản `app.py` một file) dùng được trực tiếp: đặt vào `data/wp_demo.db`, khởi động lại; startup tự thêm cột, dựng lại MiniDB nếu thiếu cột, chuyển nhãn trạng thái cũ sang mã mới và tạo các bước workflow.
 
 ## 5. Khởi tạo trên máy công ty
 
@@ -66,17 +50,7 @@ python -m unittest discover -s tests -v
 python -m uvicorn app:app --reload --port 8001
 ```
 
-Nếu dữ liệu phải đặt ngoài repository:
-
-```powershell
-$env:WP_DATA_DIR = 'D:\VAECO_DATA\wp_demo_ver3'
-$env:WP_SKIP_SEED_SAMPLES = '1'
-python -m uvicorn app:app --reload --port 8001
-```
-
 ## 6. Prompt khởi động cho Codex
-
-Sao chép nguyên khối dưới đây vào phiên Codex mới:
 
 ```text
 Hãy tiếp tục phát triển dự án VAECO Workpack Evaluation trong repository hiện tại.
@@ -84,13 +58,15 @@ Hãy tiếp tục phát triển dự án VAECO Workpack Evaluation trong reposit
 Trước khi sửa mã:
 1. Đọc đầy đủ README.md và BAN_GIAO_CODEX.md.
 2. Kiểm tra git status và bảo toàn mọi thay đổi chưa commit.
-3. Đọc cấu trúc wp_app, đặc biệt config.py, adapters.py, matching.py, services.py và router liên quan.
+3. Đọc wp_app: config.py, matching_config.py, adapters.py, mpd_matching.py, matching.py, services.py, minidb.py và router liên quan.
 4. Chạy python -m unittest discover -s tests -v để lấy baseline.
 5. Không đưa data/, file Excel nghiệp vụ, database, uploads hoặc thông tin nhạy cảm vào Git.
 
 Khi triển khai yêu cầu mới:
-- Đặt business logic trong service/matching/parser, không dồn vào route hoặc app.py.
-- Parser/customer mới phải đăng ký qua wp_app/adapters.py.
+- Lớp 1 (MPD key) là luồng matching chính; lớp 2–3 chỉ là gợi ý, không gán MHR.
+- Quy tắc theo khách hàng đặt trong matching_config.py, không viết cứng mã khách hàng trong code.
+- Đặt business logic trong service/matching/parser/minidb, không dồn vào route hoặc app.py.
+- Mọi thay đổi MiniDB phải ghi amp_change; không bao giờ ghi vào hệ thống AMOS.
 - Bổ sung test hồi quy cho mọi thay đổi matching, parser hoặc schema.
 - Giữ tương thích lệnh uvicorn app:app.
 - Sau khi hoàn tất, chạy tests, compileall, node --check và git diff --check.
@@ -101,17 +77,25 @@ Trước tiên hãy báo lại: trạng thái Git, kết quả baseline tests, m
 
 ## 7. Quy ước phát triển
 
-- `app.py` chỉ là compatibility entry point, không thêm business logic vào đây.
+- `app.py` chỉ là compatibility entry point.
 - Route chỉ xác thực request, gọi service và định dạng response.
-- Logic thuần nên nằm trong `matching.py`, `parsers.py` hoặc service phù hợp.
-- Không nhúng đường dẫn máy cá nhân vào mã; dùng `config.py` và biến môi trường.
-- Mọi thao tác thay đổi kết quả review phải có lý do và ghi `change_log`.
-- Migration phải chạy lặp lại an toàn trên database hiện hữu.
+- Không nhúng đường dẫn máy cá nhân; dùng `config.py` và biến môi trường.
+- Thay đổi kết quả review phải có lý do và ghi `change_log`; thay đổi MiniDB ghi `amp_change`.
+- Migration phải chạy lặp lại an toàn (cột mới thêm vào `MERGED_MIGRATIONS` hoặc danh sách migration của `init_db`).
 - Không tự động gán MHR cho candidate lớp 2 hoặc lớp 3.
-- Không làm lẫn model A320 với A321 khi candidate không thuộc family A32S phù hợp.
-- DLH A350 chỉ matching Customer AMP đúng DLH/A350.
+- Không làm lẫn model A320 với A321 ở lớp 2–3 (`aircraft_rank`); lớp 1 lọc theo họ tàu (`aircraft_family`: 32S/350/787/ATR).
+- Khách hàng tìm Customer AMP trước ALL AMP Task cấu hình trong `CUSTOMER_FIRST` (mặc định DLH + A350).
+- Trường nhận diện bản ghi MiniDB (`NATURAL_KEY_FIELDS`) không được sửa.
 
-## 8. Checklist sau mỗi thay đổi
+## 8. Kiểm thử
+
+| File | Nội dung |
+|---|---|
+| `tests/test_app_structure.py` | Registry adapter; contract đường dẫn API; không còn `/api/upload`. |
+| `tests/test_matching.py` | Hàm chung, `lookup_amp` lớp 1–3, parser regression trên file mẫu (tự bỏ qua nếu thiếu file). |
+| `tests/test_mpd_matching.py` | MPD key, LH/RH, dòng VietJet được matching, thứ tự nguồn theo cấu hình, HVN trước AMP Date, chia item ENG #1/#2, `REVIEW_REQUIRED` của lớp 1, gợi ý lớp 2 không MHR, `NOT_APPLICABLE`, Thêm vào Database + matching lại, Sửa bản ghi (trường khóa), popup. |
+
+Checklist sau mỗi thay đổi:
 
 ```powershell
 python -m unittest discover -s tests -v
@@ -121,31 +105,20 @@ git diff --check
 git status --short
 ```
 
-Nếu thay đổi API, mở `/docs` và chạy smoke test các endpoint liên quan. Nếu thay đổi export, tải file Excel và mở kiểm tra các sheet, cột, trạng thái draft/chính thức.
-
 ## 9. Điểm mở rộng ưu tiên
 
-1. Tách `static/app-ver3.js` thành module theo dashboard, workflow, grid và API client.
-2. Bổ sung authentication và role reviewer/approver/admin.
-3. Chuyển migration SQLite sang Alembic hoặc công cụ versioned tương đương.
-4. Bổ sung nguồn Task–Check/Linked Check cho Check Scope.
-5. Xây dựng database Workpack lịch sử để đề xuất TAT.
-6. Bổ sung integration test HTTP tự động và CI trên GitHub.
-7. Chuyển sang PostgreSQL nếu triển khai nhiều người dùng đồng thời.
+1. Tách `static/app-ver3.js` thành module.
+2. Authentication và role reviewer/approver/admin.
+3. Migration có version (Alembic hoặc tương đương).
+4. Nguồn Task–Check/Linked Check cho Check Scope.
+5. Database Workpack lịch sử để đề xuất TAT.
+6. Integration test HTTP và CI.
+7. PostgreSQL nếu nhiều người dùng đồng thời.
 
 ## 10. Rủi ro cần nhớ
 
-- Source Excel có thể đổi tên cột hoặc cấu trúc block; parser phải fail rõ ràng và có fixture/test mới.
-- Thay đổi matching có thể làm thay đổi hàng nghìn kết quả cũ; cân nhắc tăng `MATCH_LOGIC_VERSION` và migration.
-- Startup chuẩn hóa `stored_path` về đường dẫn tương đối trong `data/`; vẫn phải sao chép đủ `data/uploads/` nếu muốn giữ file nguồn.
-- Database SQLite và file upload phải được sao lưu trước khi migration hoặc xóa dữ liệu.
-- Ứng dụng chưa có cơ chế chống upload độc hại ngoài giới hạn extension và dung lượng; chỉ dùng trong môi trường tin cậy.
-
-## 11. Tiêu chí hoàn thành một nhánh phát triển
-
-- Yêu cầu nghiệp vụ có test hoặc bằng chứng kiểm thử.
-- Không có lỗi cú pháp Python/JavaScript.
-- API cũ liên quan vẫn hoạt động hoặc có migration/documentation rõ ràng.
-- Không có dữ liệu runtime/nhạy cảm trong diff.
-- README và file bàn giao không bị lỗi thời.
-- `git diff --check` sạch.
+- File Excel nguồn có thể đổi tên cột/cấu trúc; parser phải báo lỗi rõ và có test mới.
+- Đổi logic matching → tăng `MATCH_LOGIC_VERSION`; hồ sơ không có thao tác thủ công sẽ được matching lại khi khởi động.
+- MiniDB chỉ dựng lại khi thiếu cột; khi đó bản ghi thủ công được giữ và các lần sửa được áp dụng lại theo khóa tự nhiên.
+- Sao lưu `data/` trước migration hoặc xóa dữ liệu.
+- Chỉ dùng trong môi trường tin cậy (upload chỉ kiểm tra đuôi file và dung lượng).

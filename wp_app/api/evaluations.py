@@ -16,6 +16,14 @@ from ..services import resolve_stored_path, set_workflow_step, workflow_progress
 
 router = APIRouter()
 
+# Merged: how the status codes stored in the database are shown to users
+STATUS_LABELS = {
+    "AUTO_MATCH": "Đã khớp",
+    "REVIEW_REQUIRED": "Cần review",
+    "NOT_FOUND": "Chưa khớp",
+    "NOT_APPLICABLE": "Không áp dụng",
+}
+
 
 @router.get("/api/evaluations/{evaluation_id}")
 def evaluation_detail(evaluation_id: str, q: str = "", status: str = "all", page: int = 1,
@@ -26,16 +34,21 @@ def evaluation_detail(evaluation_id: str, q: str = "", status: str = "all", page
     params: list[Any] = [evaluation_id]
     if q:
         where.append("""(i.task_no LIKE ? OR i.source_title LIKE ? OR i.title LIKE ?
-          OR i.description LIKE ? OR i.suggested_task_no LIKE ? OR i.suggested_title LIKE ?)""")
-        params.extend([f"%{q}%"] * 6)
+          OR i.description LIKE ? OR i.suggested_task_no LIKE ? OR i.suggested_title LIKE ?
+          OR i.amos_reference LIKE ? OR i.task_ref LIKE ?)""")
+        params.extend([f"%{q}%"] * 8)
     if status == "matched":
         where.append("i.matched=1")
+    if status == "auto_match":
+        where.append("i.match_status='AUTO_MATCH'")
     if status == "unmatched":
         where.append("i.matched=0")
     if status == "not_found":
         where.append("i.match_status='NOT_FOUND'")
-    if status == "review_required":
+    if status in {"review_required", "review"}:
         where.append("i.match_status='REVIEW_REQUIRED'")
+    if status == "layer_1_review":
+        where.append("i.match_status='REVIEW_REQUIRED' AND i.match_layer=1")
     if status == "layer_2":
         where.append("i.match_layer=2")
     if status == "layer_3":
@@ -44,6 +57,8 @@ def evaluation_detail(evaluation_id: str, q: str = "", status: str = "all", page
         where.append("i.match_status='NOT_APPLICABLE'")
     if status == "important":
         where.append("i.important_job=1")
+    if status == "added_to_db":
+        where.append("COALESCE(i.added_to_db,0)=1")
     predicate = " AND ".join(where)
     with db() as connection:
         header = connection.execute("""SELECT e.*,t.file_name,t.description,t.customer,
@@ -63,6 +78,7 @@ def evaluation_detail(evaluation_id: str, q: str = "", status: str = "all", page
             "linked_jobcards", "jobcards_title", "important_job", "not_in_database",
             "match_status", "match_method", "match_candidate_count", "match_layer",
             "match_score", "suggested_task_no", "suggested_title", "suggested_mhr", "seq",
+            "source_title", "match_note", "amos_reference", "task_ref",
         }
         order_column = sort_by if sort_by in sortable else "seq"
         direction = "DESC" if sort_dir.lower() == "desc" else "ASC"
@@ -78,7 +94,9 @@ def evaluation_detail(evaluation_id: str, q: str = "", status: str = "all", page
           COALESCE(SUM(matched),0) matched,
           COALESCE(SUM(not_in_database),0) unmatched,
           COALESCE(SUM(important_job),0) important,
+          SUM(CASE WHEN match_status='AUTO_MATCH' THEN 1 ELSE 0 END) auto_match,
           SUM(CASE WHEN match_status='REVIEW_REQUIRED' THEN 1 ELSE 0 END) review_required,
+          SUM(CASE WHEN match_status='REVIEW_REQUIRED' AND match_layer=1 THEN 1 ELSE 0 END) layer_1_review,
           SUM(CASE WHEN match_status='NOT_APPLICABLE' THEN 1 ELSE 0 END) not_applicable,
           SUM(CASE WHEN match_layer=1 THEN 1 ELSE 0 END) layer_1,
           SUM(CASE WHEN match_layer=2 THEN 1 ELSE 0 END) layer_2,
@@ -234,6 +252,39 @@ def style_sheet(worksheet) -> None:
     worksheet.sheet_properties.tabColor = gold
 
 
+EXPORT_COLUMNS = [
+    ("Event Number", "task_no"), ("Task Ref (MPD)", "task_ref"), ("Tally Title", "source_title"),
+    ("Match Status", "match_status"), ("AMOS Reference", "amos_reference"),
+    ("Match Layer", "match_layer"), ("Match Score (%)", "match_score"), ("Match Method", "match_method"),
+    ("Candidate Count", "match_candidate_count"),
+    ("Suggested Taskcard", "suggested_task_no"),
+    ("Suggested Database Title", "suggested_title"), ("Suggested MHR", "suggested_mhr"),
+    ("Match Note", "match_note"), ("Taskcard Title", "title"),
+    ("Description", "description"), ("Phase", "phase"), ("Zone", "zone"),
+    ("Area", "area"), ("Panel", "panel"), ("Special Code", "special_code"),
+    ("Resource Type", "resource_type"), ("Classification", "classification"),
+    ("Type Code", "type_code"), ("Qualification", "qualification"),
+    ("Planning MHR", "planning_mhr"), ("Information Skill", "information_skill"),
+    ("Requirement Link", "requirement_link"), ("Linked Jobcards", "linked_jobcards"),
+    ("Jobcards Title", "jobcards_title"), ("Important Job", "important_job"),
+    ("Not included in Database", "not_in_database"),
+]
+
+
+def export_value(item: dict[str, Any], key: str) -> Any:
+    if key == "important_job":
+        return "X" if item[key] else None
+    if key == "not_in_database":
+        if not item[key]:
+            return None
+        return "X (Đã thêm vào Database)" if item.get("added_to_db") else "X"
+    if key == "match_status":
+        return STATUS_LABELS.get(item[key], item[key])
+    if key == "planning_mhr" and not item["matched"]:
+        return None
+    return item[key]
+
+
 @router.get("/api/evaluations/{evaluation_id}/export")
 def export_excel(evaluation_id: str):
     with db() as connection:
@@ -255,23 +306,7 @@ def export_excel(evaluation_id: str):
     is_draft = progress["progress"] < 100 or header["status"] not in {"Chờ phê duyệt", "Hoàn tất"}
     workbook = Workbook()
     workbook.remove(workbook.active)
-    columns = [
-        ("Event Number", "task_no"), ("Tally Title", "source_title"),
-        ("Match Layer", "match_layer"), ("Match Status", "match_status"),
-        ("Match Score (%)", "match_score"), ("Match Method", "match_method"),
-        ("Candidate Count", "match_candidate_count"),
-        ("Suggested Taskcard", "suggested_task_no"),
-        ("Suggested Database Title", "suggested_title"), ("Suggested MHR", "suggested_mhr"),
-        ("Match Note", "match_note"), ("Taskcard Title", "title"),
-        ("Description", "description"), ("Phase", "phase"), ("Zone", "zone"),
-        ("Area", "area"), ("Panel", "panel"), ("Special Code", "special_code"),
-        ("Resource Type", "resource_type"), ("Classification", "classification"),
-        ("Type Code", "type_code"), ("Qualification", "qualification"),
-        ("Planning MHR", "planning_mhr"), ("Information Skill", "information_skill"),
-        ("Requirement Link", "requirement_link"), ("Linked Jobcards", "linked_jobcards"),
-        ("Jobcards Title", "jobcards_title"), ("Important Job", "important_job"),
-        ("Not included in Database", "not_in_database"),
-    ]
+    columns = EXPORT_COLUMNS
     sheets = [
         ("Detailed Task List", items),
         ("Important Jobs", [item for item in items if item["important_job"]]),
@@ -282,15 +317,7 @@ def export_excel(evaluation_id: str):
         worksheet = workbook.create_sheet(title)
         worksheet.append([column[0] for column in columns])
         for item in subset:
-            row = []
-            for _, key in columns:
-                if key in {"important_job", "not_in_database"}:
-                    row.append("X" if item[key] else None)
-                elif key == "planning_mhr" and not item["matched"]:
-                    row.append(None)
-                else:
-                    row.append(item[key])
-            worksheet.append(row)
+            worksheet.append([export_value(item, key) for _, key in columns])
         if title == "Task out of Check Type Scope":
             worksheet.append(["Chưa có dữ liệu Task–Check/Linked Check để đánh giá tự động."])
         style_sheet(worksheet)
@@ -305,6 +332,7 @@ def export_excel(evaluation_id: str):
         ("Check Type", header["check_type"]), ("Workpack revision", header["revision"]),
         ("TAT review", header["tat_review"]), ("Tổng task", len(items)),
         ("Task khớp", sum(item["matched"] for item in items)),
+        ("Task cần review", sum(item["match_status"] == "REVIEW_REQUIRED" for item in items)),
         ("Task thiếu DB", sum(item["not_in_database"] for item in items)),
         ("Important Job", sum(item["important_job"] for item in items)),
         ("Tổng MHR", round(sum(

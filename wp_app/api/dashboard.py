@@ -40,15 +40,16 @@ def dashboard():
 
 @router.get("/api/data/amos")
 def browse_amos(q: str = "", source: str = "all", aircraft_type: str = "all",
-                customer: str = "all", classification: str = "all", page: int = 1,
-                page_size: int = 40):
+                customer: str = "all", classification: str = "all", origin: str = "all",
+                page: int = 1, page_size: int = 40):
     page = max(1, page)
     page_size = min(max(10, page_size), 100)
     where = ["1=1"]
     params: list[Any] = []
     if q.strip():
-        where.append("(task_no LIKE ? OR title LIKE ? OR description LIKE ? OR special_code LIKE ?)")
-        params.extend([f"%{q.strip()}%"] * 4)
+        where.append("""(task_no LIKE ? OR taskcard_no LIKE ? OR title LIKE ?
+          OR description LIKE ? OR special_code LIKE ?)""")
+        params.extend([f"%{q.strip()}%"] * 5)
     for column, value in (
         ("source", source),
         ("aircraft_type", aircraft_type),
@@ -58,6 +59,13 @@ def browse_amos(q: str = "", source: str = "all", aircraft_type: str = "all",
         if value != "all":
             where.append(f"COALESCE({column},'')=?")
             params.append(value)
+    # Merged: origin of the record in the MiniDB
+    if origin == "manual":
+        where.append("origin='MANUAL'")
+    elif origin == "edited":
+        where.append("COALESCE(edited,0)=1")
+    elif origin == "amos":
+        where.append("COALESCE(origin,'AMOS')='AMOS' AND COALESCE(edited,0)=0")
     predicate = " AND ".join(where)
     with db() as connection:
         total = connection.execute(
@@ -68,7 +76,9 @@ def browse_amos(q: str = "", source: str = "all", aircraft_type: str = "all",
             for row in connection.execute(
                 f"""SELECT id,source,aircraft_type,customer,task_no,title,
                 phase,zone,special_code,classification,planning_mhr,qualification,description,area,panel,
-                resource_type,information_skill,requirement_link,linked_jobcards FROM amp_task
+                resource_type,information_skill,requirement_link,linked_jobcards,
+                amp_name,amp_date,mp_name,taskcard_no,taskcard_ident,task_type,mpd_key,effectivity,
+                type_code,jobcards_title,information_mhr,origin,edited,updated_at,updated_by FROM amp_task
                 WHERE {predicate} ORDER BY task_no LIMIT ? OFFSET ?""",
                 (*params, page_size, (page - 1) * page_size),
             )
@@ -93,7 +103,9 @@ def browse_amos(q: str = "", source: str = "all", aircraft_type: str = "all",
         stats = dict(connection.execute("""SELECT COUNT(*) total,
           SUM(CASE WHEN source='VNA' THEN 1 ELSE 0 END) vna,
           SUM(CASE WHEN source='CUSTOMER' THEN 1 ELSE 0 END) customer,
-          SUM(CASE WHEN UPPER(COALESCE(classification,''))='WATCH ITEM' THEN 1 ELSE 0 END) watch_items
+          SUM(CASE WHEN UPPER(COALESCE(classification,'')) LIKE '%WATCH ITEM%' THEN 1 ELSE 0 END) watch_items,
+          SUM(CASE WHEN origin='MANUAL' THEN 1 ELSE 0 END) manual,
+          SUM(CASE WHEN COALESCE(edited,0)=1 THEN 1 ELSE 0 END) edited
           FROM amp_task""").fetchone())
     return {
         "items": rows,

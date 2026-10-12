@@ -1,9 +1,51 @@
+# =============================================================================
+# matching.py – SHARED MATCHING HELPERS + LAYERS 2–3 SCORING (fork module)
+# -----------------------------------------------------------------------------
+# Pure functions, no database access. Used by services.lookup_amp().
+#
+# Status codes stored in evaluation_item.match_status:
+#   AUTO_MATCH        matched, nothing to check            -> "Đã khớp"
+#   REVIEW_REQUIRED   matched with a warning, or a layer 2/3 suggestion
+#                                                            -> "Cần review"
+#   NOT_FOUND         no candidate at all                    -> "Chưa khớp"
+#   NOT_APPLICABLE    row has no task number to match        -> "Không áp dụng"
+#
+# Normalising
+#   normalize()             trim, collapse spaces, upper case
+#   taskcard_core()         "274000-01-1/00" -> "274000-01-1" (drop /rev)
+#   canonical_customer()    alias -> code (table in matching_config.py)
+#   canonical_aircraft()    "350" -> "A350", "32S" -> "A32S" ...
+#   aircraft_from_amp_name() real model from VNA AMP Name (A320 / A321 / A32S)
+#   aircraft_rank()         0 = same model, 1 = same family, None = not allowed
+#                           (never A320 with A321)
+#   parse_mhr()             "2:36" -> 2.6 hours, "1.5" -> 1.5
+#
+# Layer 2 / 3 scoring
+#   prefix_similarity()     % of common leading characters (layer 2)
+#   title_similarity()      best of character and word similarity (layer 3)
+#   best_scored_candidate() best record above a threshold:
+#                             PREFIX: >= PREFIX_MIN_CHARS (4) chars and >= 60 %
+#                             TITLE:  >= 65 %
+#
+# Fork layer-1 helper (kept for the fork's lookup and tests)
+#   resolve_candidates()    collapse rows of one taskcard; conflict in title /
+#                           MHR -> REVIEW_REQUIRED.
+#   is_match_eligible()     fork rule (VietJet Block Taskcard, Lufthansa MS Item).
+#                           NOT used by the merged evaluation – the merged rule is
+#                           mpd_matching.prepare_row().
+#
+# MatchDecision(status, method, record, candidate_count, note, score, layer)
+#   result object of services.lookup_amp().
+# =============================================================================
+
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 from typing import Any, Iterable, Mapping
+
+from .matching_config import CUSTOMER_ALIASES
 
 
 AUTO_MATCH = "AUTO_MATCH"
@@ -67,11 +109,11 @@ def title_similarity(left: Any, right: Any) -> float:
 
 
 def canonical_customer(value: Any) -> str:
+    """Canonical customer code; the aliases live in matching_config.CUSTOMER_ALIASES."""
     text = normalize(value)
-    if text in {"VA-VJ", "VJC", "VIETJET", "VIETJET AIR"}:
-        return "VA-VJ"
-    if text in {"DLH", "LUFTHANSA", "LUFTHANSA GERMAN AIRLINES"}:
-        return "DLH"
+    for code, aliases in CUSTOMER_ALIASES.items():
+        if text == normalize(code) or text in {normalize(alias) for alias in aliases}:
+            return normalize(code)
     return text
 
 
