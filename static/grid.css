@@ -139,3 +139,27 @@
   .review-checklist { grid-template-columns: 1fr; }
   .result-callout, .export-bar { align-items: flex-start; flex-direction: column; }
 }
+
+/* ==========================================================================
+   Merged features – added at the end only, the rules above are unchanged.
+   ========================================================================== */
+/* Wrap mode ("Xuống dòng: Bật"): text wraps to the column width, the row grows.
+   Very long text (e.g. Description) is capped and scrolls inside its own cell. */
+.excel-grid.wrap-text td { height: auto; }
+.excel-grid.wrap-text .cell-value {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  text-overflow: clip;
+  max-height: 180px;
+  overflow-y: auto;
+  line-height: 1.4;
+}
+.excel-grid.wrap-text .amos-ref { text-align: left; white-space: inherit; }
+.wrap-toggle.active { background: #e2eef6; border-color: #9fc0d6; color: #175d87; }
+.amos-ref { text-align: left; }
+
+/* Final Evaluation tables (man-hour summary, statistics) */
+.final-title { padding: 14px; text-align: center; background: var(--navy); color: white; font-size: 18px; font-weight: 700; }
+.final-table th { position: static; }
+.final-table th:first-child, .final-table td:first-child { width: 52px; text-align: center; }
+.final-table .total-row td { background: #eef3f7; font-weight: 700; }

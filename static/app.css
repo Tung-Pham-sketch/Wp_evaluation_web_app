@@ -3,3 +3,23 @@
 .structure-panel,.block-result-panel{margin:12px 0}.structure-table{min-width:1050px}.structure-table td:nth-child(2){min-width:250px}.structure-table td:nth-child(5){min-width:340px}.field-list{display:flex;flex-wrap:wrap;gap:4px}.field-list span{background:#eef3f7;border:1px solid #d6e0e7;border-radius:2px;color:#405464;padding:2px 5px;font-size:10px;white-space:nowrap}.structure-note{padding:9px 12px;background:#f7f9fa;color:var(--muted);font-size:11px;border-top:1px solid var(--line)}.evaluation-cards{grid-template-columns:repeat(3,minmax(160px,1fr))}.block-result-panel table{min-width:920px}.block-result-panel td:nth-child(2){min-width:270px}.block-result-panel td:last-child{min-width:360px}.taskcard-scope-row td{background:#f1f8f4!important}.taskcard-scope-row td:first-child{border-left:3px solid var(--green)}
 @media(max-width:950px){.evaluation-cards{grid-template-columns:1fr 1fr}}
 @media(max-width:720px){.evaluation-cards{grid-template-columns:1fr}.structure-panel,.block-result-panel{margin-left:-2px;margin-right:-2px}}
+
+/* ==========================================================================
+   Merged features (MPD matching, AMOS popup, MiniDB records, delete).
+   Added at the end only – the rules above are unchanged.
+   ========================================================================== */
+.badge.red{background:#f9e2e1;color:#9d3333}
+.ghost.danger,.link.danger{color:var(--red)}
+#recordDialog{width:min(980px,96vw)}
+#recordFields{max-height:52vh;overflow:auto;padding-right:6px}
+.form-hint{font-size:12px;color:var(--muted);margin:6px 0 0}
+.db-actions{margin-top:10px;padding-top:10px;border-top:1px solid var(--line)}
+.db-actions p{font-size:12px;color:var(--muted);margin:4px 0 8px}
+#dataDialog.wide{width:min(1180px,96vw);max-width:96vw}
+.amos-scroll{max-height:72vh;overflow:auto}
+.amos-scroll > .panel{margin-bottom:10px}
+.amos-scroll h3{margin:14px 0 8px}
+.amos-scroll .notice{margin:10px 0}
+.record-actions{display:flex;gap:6px;align-items:center}
+.panel-body{padding:10px 14px}
+.toolbar a.ghost{color:var(--ink);text-decoration:none}

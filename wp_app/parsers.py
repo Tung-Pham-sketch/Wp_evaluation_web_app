@@ -1,3 +1,27 @@
+# =============================================================================
+# parsers.py – READ THE CUSTOMER EXCEL FILES (no database, no HTTP)
+# -----------------------------------------------------------------------------
+# Every parser returns a list of dicts ("parsed rows") with at least:
+#   seq, section, task_no, source_title, event_type, rii, source_note
+#   (+ Lufthansa: source_zone, source_ata)
+# Matching fields (task_ref, side, eligible) are added later by
+# mpd_matching.prepare_row(), so parsers stay format-only.
+#
+# parse_vietjet(path)
+#   one header row; required columns: WORK STEP / EVENT NUMBER, TITLE, EVENT.
+# parse_lufthansa(path)
+#   multi-block sheet. A row starting "N. " opens a section; a row containing
+#   CRI + TITEL/TITLE is the header; each following row with a CRI is a task.
+#   "MAINTENANCE EVENTS ..." and Event-ID tables reset the header (skipped).
+#   event_type = "MS Item" inside the MS ITEMS section.
+# inspect_lufthansa_structure(path)
+#   step-2 report: every block (title row, header row, record count, fields,
+#   category, is_taskcard_scope) + sheet dimension. Used for display only.
+#
+# When the customer changes a column name, fix it here and add a regression
+# test (tests/test_matching.py, ParserRegressionTest).
+# =============================================================================
+
 from __future__ import annotations
 
 import re

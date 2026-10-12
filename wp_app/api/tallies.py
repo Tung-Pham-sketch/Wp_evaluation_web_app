@@ -15,6 +15,7 @@ from ..database import db, now
 from ..services import (
     confirm_tally_inspection,
     create_tally_record,
+    delete_tally,
     evaluate_tally,
     inspect_tally_record,
     resolve_stored_path,
@@ -45,17 +46,29 @@ async def store_upload(file: UploadFile) -> Path:
 async def create_tally(file: UploadFile = File(...), customer: str = Form(...),
                        aircraft_reg: str = Form(""), aircraft_type: str = Form(""),
                        check_type: str = Form(""), description: str = Form(""),
-                       uploader: str = Form("Demo User")):
+                       tally_format: str = Form(""), uploader: str = Form("Demo User")):
+    # Merged: every field of the upload form is mandatory (step 1 of the workflow)
+    required = {"Khách hàng": customer, "Loại tàu bay": aircraft_type, "Số đăng ký": aircraft_reg,
+                "Check Type": check_type, "Mẫu Tally Sheet": tally_format}
+    missing = [label for label, value in required.items() if not str(value or "").strip()]
+    if missing:
+        raise HTTPException(400, "Bắt buộc nhập: " + ", ".join(missing))
     destination = await store_upload(file)
     try:
         tally_id = create_tally_record(
-            destination, file.filename or destination.name, customer, aircraft_reg,
-            aircraft_type, check_type, uploader, description,
+            destination, file.filename or destination.name, customer.strip(), aircraft_reg.strip(),
+            aircraft_type.strip(), check_type.strip(), uploader, description, tally_format.strip(),
         )
     except Exception as exc:
         destination.unlink(missing_ok=True)
         raise HTTPException(400, str(exc)) from exc
     return {"tally_id": tally_id, "next_step": 2}
+
+
+@router.delete("/api/tallies/{tally_id}")
+def remove_tally(tally_id: str):
+    """Delete a Tally Sheet and its evaluation. MiniDB changes made from it are kept."""
+    return delete_tally(tally_id)
 
 
 @router.post("/api/tallies/{tally_id}/inspect")
@@ -89,7 +102,9 @@ def get_workflow(tally_id: str):
               COALESCE(SUM(matched),0) matched,
               COALESCE(SUM(not_in_database),0) unmatched,
               COALESCE(SUM(important_job),0) important,
+              SUM(CASE WHEN match_status='AUTO_MATCH' THEN 1 ELSE 0 END) auto_match,
               SUM(CASE WHEN match_status='REVIEW_REQUIRED' THEN 1 ELSE 0 END) review_required,
+              SUM(CASE WHEN match_status='REVIEW_REQUIRED' AND match_layer=1 THEN 1 ELSE 0 END) layer_1_review,
               SUM(CASE WHEN match_status='NOT_APPLICABLE' THEN 1 ELSE 0 END) not_applicable,
               SUM(CASE WHEN match_layer=1 THEN 1 ELSE 0 END) layer_1,
               SUM(CASE WHEN match_layer=2 THEN 1 ELSE 0 END) layer_2,
@@ -118,6 +133,7 @@ def get_workflow(tally_id: str):
             if evaluation:
                 rows = connection.execute("""SELECT section,COUNT(*) evaluated_count,
                   COALESCE(SUM(matched),0) matched,
+                  SUM(CASE WHEN match_status='REVIEW_REQUIRED' AND match_layer=1 THEN 1 ELSE 0 END) layer_1_review,
                   SUM(CASE WHEN match_layer=2 THEN 1 ELSE 0 END) layer_2,
                   SUM(CASE WHEN match_layer=3 THEN 1 ELSE 0 END) layer_3,
                   SUM(CASE WHEN match_status='NOT_FOUND' THEN 1 ELSE 0 END) not_found,
@@ -131,24 +147,24 @@ def get_workflow(tally_id: str):
                 stats = section_stats.get(normalize(block["raw_title"]), {})
                 evaluated_count = int(stats.get("evaluated_count") or 0)
                 matched = int(stats.get("matched") or 0)
+                layer_1_review = int(stats.get("layer_1_review") or 0)
                 layer_2 = int(stats.get("layer_2") or 0)
                 layer_3 = int(stats.get("layer_3") or 0)
                 not_found = int(stats.get("not_found") or 0)
-                if block["is_taskcard_scope"]:
+                if block["is_taskcard_scope"] or evaluated_count:
+                    # Merged: every block with CRI rows is matched by MPD key, not only MS ITEMS
                     if not evaluation:
                         status = "Chưa đánh giá"
-                        result = "Sẽ đối chiếu CRI với Jobcard No. của Customer AMP DLH–A350."
-                    elif matched == block["record_count"] and not layer_2 and not layer_3 and not not_found:
+                        result = "Sẽ đối chiếu CRI theo MPD key (thứ tự nguồn theo cấu hình khách hàng)."
+                    elif matched == evaluated_count and not layer_1_review and not layer_2 \
+                            and not layer_3 and not not_found:
                         status = "Hoàn thành"
-                        result = (
-                            f"{matched}/{block['record_count']} CRI khớp 100% với Jobcard No. "
-                            "của Customer AMP DLH–A350."
-                        )
+                        result = f"{matched}/{evaluated_count} CRI khớp AMOS theo MPD key."
                     else:
-                        status = "Cần review" if layer_2 or layer_3 else "Đã đánh giá"
+                        status = "Cần review" if layer_1_review or layer_2 or layer_3 else "Đã đánh giá"
                         result = (
-                            f"Khớp 100%: {matched}; lớp 2: {layer_2}; lớp 3: {layer_3}; "
-                            f"chưa có candidate: {not_found}."
+                            f"Khớp: {matched} (cần review: {layer_1_review}); lớp 2: {layer_2}; "
+                            f"lớp 3: {layer_3}; chưa có candidate: {not_found}."
                         )
                 elif not block["record_count"]:
                     status = "Không có dữ liệu"
@@ -158,11 +174,12 @@ def get_workflow(tally_id: str):
                     result = "Khối biến động sau thời điểm in; chưa áp dụng logic so taskcard."
                 else:
                     status = "Đã nhận diện"
-                    result = "Ngoài phạm vi CRI ↔ Jobcard No.; chờ quy tắc đánh giá riêng."
+                    result = "Khối không có cột CRI; chờ quy tắc đánh giá riêng."
                 block_summary.append({
                     **block,
                     "evaluated_count": evaluated_count,
                     "matched": matched,
+                    "layer_1_review": layer_1_review,
                     "layer_2": layer_2,
                     "layer_3": layer_3,
                     "not_found": not_found,
